@@ -1,5 +1,6 @@
 import logging
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from telegram.ext import ContextTypes
 
 import database as db
@@ -18,8 +19,12 @@ async def send_reminder(context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = context.job.data["user_id"]
     user = db.get_or_create_user(user_id)
 
-    # Check if within active hours
-    current_hour = datetime.now().hour
+    # Check if within active hours (in user's timezone)
+    try:
+        user_tz = ZoneInfo(user.get("timezone", "UTC"))
+    except Exception:
+        user_tz = ZoneInfo("UTC")
+    current_hour = datetime.now(user_tz).hour
     if not (user["active_hours_start"] <= current_hour < user["active_hours_end"]):
         logger.info(f"Skipping reminder for {user_id}: outside active hours ({current_hour})")
         return

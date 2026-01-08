@@ -39,6 +39,7 @@ def get_quick_drink_keyboard() -> InlineKeyboardMarkup:
 def get_settings_keyboard(user: dict) -> InlineKeyboardMarkup:
     """Get settings menu keyboard."""
     reminders_status = "ON" if user["reminders_enabled"] else "OFF"
+    timezone = user.get("timezone", "UTC")
 
     return InlineKeyboardMarkup([
         [InlineKeyboardButton(
@@ -52,6 +53,10 @@ def get_settings_keyboard(user: dict) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(
             f"Active Hours: {user['active_hours_start']}:00-{user['active_hours_end']}:00",
             callback_data="settings:hours"
+        )],
+        [InlineKeyboardButton(
+            f"Timezone: {timezone}",
+            callback_data="settings:timezone"
         )],
         [InlineKeyboardButton(
             f"Reminders: {reminders_status}",
@@ -99,6 +104,53 @@ def get_hours_keyboard(setting_type: str) -> InlineKeyboardMarkup:
             for h in hours[i:i+4]
         ]
         buttons.append(row)
+
+    buttons.append([InlineKeyboardButton("Back", callback_data="settings:back")])
+    return InlineKeyboardMarkup(buttons)
+
+
+def get_timezone_keyboard(page: int = 0) -> InlineKeyboardMarkup:
+    """Get timezone selection keyboard."""
+    timezones = [
+        ("UTC", "UTC"),
+        ("London", "Europe/London"),
+        ("Paris", "Europe/Paris"),
+        ("Berlin", "Europe/Berlin"),
+        ("Kyiv", "Europe/Kyiv"),
+        ("Moscow", "Europe/Moscow"),
+        ("Dubai", "Asia/Dubai"),
+        ("Mumbai", "Asia/Kolkata"),
+        ("Bangkok", "Asia/Bangkok"),
+        ("Singapore", "Asia/Singapore"),
+        ("Tokyo", "Asia/Tokyo"),
+        ("Sydney", "Australia/Sydney"),
+        ("New York", "America/New_York"),
+        ("Chicago", "America/Chicago"),
+        ("Denver", "America/Denver"),
+        ("Los Angeles", "America/Los_Angeles"),
+    ]
+
+    per_page = 8
+    start = page * per_page
+    end = start + per_page
+    page_timezones = timezones[start:end]
+
+    buttons = []
+    for i in range(0, len(page_timezones), 2):
+        row = [
+            InlineKeyboardButton(tz[0], callback_data=f"tz:{tz[1]}")
+            for tz in page_timezones[i:i+2]
+        ]
+        buttons.append(row)
+
+    # Navigation buttons
+    nav_row = []
+    if page > 0:
+        nav_row.append(InlineKeyboardButton("<", callback_data=f"tz_page:{page-1}"))
+    if end < len(timezones):
+        nav_row.append(InlineKeyboardButton(">", callback_data=f"tz_page:{page+1}"))
+    if nav_row:
+        buttons.append(nav_row)
 
     buttons.append([InlineKeyboardButton("Back", callback_data="settings:back")])
     return InlineKeyboardMarkup(buttons)
@@ -316,6 +368,29 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
         await query.edit_message_text(
             f"Active hours set to {user['active_hours_start']}:00-{hour}:00!\n\nSettings",
+            reply_markup=get_settings_keyboard(user)
+        )
+
+    elif data == "settings:timezone":
+        await query.edit_message_text(
+            "Select your timezone:",
+            reply_markup=get_timezone_keyboard(0)
+        )
+
+    elif data.startswith("tz_page:"):
+        page = int(data.split(":")[1])
+        await query.edit_message_text(
+            "Select your timezone:",
+            reply_markup=get_timezone_keyboard(page)
+        )
+
+    elif data.startswith("tz:"):
+        timezone = data.split(":", 1)[1]
+        db.update_user_setting(user_id, "timezone", timezone)
+        user = db.get_or_create_user(user_id)
+
+        await query.edit_message_text(
+            f"Timezone set to {timezone}!\n\nSettings",
             reply_markup=get_settings_keyboard(user)
         )
 

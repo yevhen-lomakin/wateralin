@@ -32,6 +32,7 @@ def init_db():
                 active_hours_start INTEGER DEFAULT 8,
                 active_hours_end INTEGER DEFAULT 22,
                 reminders_enabled INTEGER DEFAULT 1,
+                timezone TEXT DEFAULT 'UTC',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -50,6 +51,12 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_water_logs_user_date
             ON water_logs (user_id, logged_at)
         """)
+
+        # Migration: add timezone column if missing
+        cursor.execute("PRAGMA table_info(users)")
+        columns = [row[1] for row in cursor.fetchall()]
+        if "timezone" not in columns:
+            cursor.execute("ALTER TABLE users ADD COLUMN timezone TEXT DEFAULT 'UTC'")
 
 
 def get_or_create_user(user_id: int) -> dict:
@@ -79,7 +86,8 @@ def update_user_setting(user_id: int, setting: str, value) -> None:
         "reminder_interval_hours",
         "active_hours_start",
         "active_hours_end",
-        "reminders_enabled"
+        "reminders_enabled",
+        "timezone"
     }
 
     if setting not in allowed_settings:
