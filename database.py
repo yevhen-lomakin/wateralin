@@ -52,6 +52,42 @@ def init_db():
             ON water_logs (user_id, logged_at)
         """)
 
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS pills (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users (user_id)
+            )
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS pill_reminders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                pill_id INTEGER NOT NULL,
+                remind_at_hour INTEGER NOT NULL,
+                remind_at_minute INTEGER NOT NULL DEFAULT 0,
+                FOREIGN KEY (pill_id) REFERENCES pills (id)
+            )
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS pill_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                pill_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                taken_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (pill_id) REFERENCES pills (id),
+                FOREIGN KEY (user_id) REFERENCES users (user_id)
+            )
+        """)
+
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_pill_logs_user_date
+            ON pill_logs (user_id, taken_at)
+        """)
+
         # Migration: add timezone column if missing
         cursor.execute("PRAGMA table_info(users)")
         columns = [row[1] for row in cursor.fetchall()]
@@ -207,3 +243,117 @@ def undo_last_drink(user_id: int) -> int:
         # Delete it
         cursor.execute("DELETE FROM water_logs WHERE id = ?", (row["id"],))
         return row["amount_ml"]
+
+
+# --- Pill functions ---
+
+
+def add_pill(user_id: int, name: str) -> int:
+    """Add a new pill for user. Returns pill id."""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO pills (user_id, name) VALUES (?, ?)",
+            (user_id, name)
+        )
+        return cursor.lastrowid
+
+
+def get_user_pills(user_id: int) -> list[dict]:
+    """Get all pills for a user with their reminder times."""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT * FROM pills WHERE user_id = ? ORDER BY name",
+            (user_id,)
+        )
+        pills = [dict(row) for row in cursor.fetchall()]
+
+        for pill in pills:
+            cursor.execute(
+                "SELECT remind_at_hour, remind_at_minute FROM pill_reminders WHERE pill_id = ? ORDER BY remind_at_hour, remind_at_minute",
+                (pill["id"],)
+            )
+            pill["reminders"] = [dict(row) for row in cursor.fetchall()]
+
+        return pills
+
+
+def get_pill(pill_id: int) -> Optional[dict]:
+    """Get a single pill by id with its reminders."""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM pills WHERE id = ?", (pill_id,))
+        row = cursor.fetchone()
+        if not row:
+            return None
+        pill = dict(row)
+        cursor.execute(
+            "SELECT remind_at_hour, remind_at_minute FROM pill_reminders WHERE pill_id = ? ORDER BY remind_at_hour, remind_at_minute",
+            (pill_id,)
+        )
+        pill["reminders"] = [dict(r) for r in cursor.fetchall()]
+        return pill
+
+
+def delete_pill(pill_id: int) -> None:
+    """Delete a pill and its reminders/logs."""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM pill_reminders WHERE pill_id = ?", (pill_id,))
+        cursor.execute("DELETE FROM pill_logs WHERE pill_id = ?", (pill_id,))
+        cursor.execute("DELETE FROM pills WHERE id = ?", (pill_id,))
+
+
+def add_pill_reminder(pill_id: int, hour: int, minute: int = 0) -> int:
+    """Add a reminder time for a pill. Returns reminder id."""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO pill_reminders (pill_id, remind_at_hour, remind_at_minute) VALUES (?, ?, ?)",
+            (pill_id, hour, minute)
+        )
+        return cursor.lastrowid
+
+
+def log_pill_taken(pill_id: int, user_id: int) -> None:
+    """Log that a pill was taken."""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT INTO pill_logs (pill_id, user_id) VALUES (?, ?)",
+            (pill_id, user_id)
+        )
+
+
+def get_today_pill_logs(user_id: int) -> list[dict]:
+    """Get all pill logs for today."""
+    today = date.today().isoformat()
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT pl.pill_id, pl.taken_at, p.name
+            FROM pill_logs pl
+            JOIN pills p ON p.id = pl.pill_id
+            WHERE pl.user_id = ? AND DATE(pl.taken_at) = ?
+            ORDER BY pl.taken_at
+            """,
+            (user_id, today)
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+
+def get_all_pill_reminders() -> list[dict]:
+    """Get all pill reminders with user info for scheduler restoration."""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT pr.id as reminder_id, pr.pill_id, pr.remind_at_hour, pr.remind_at_minute,
+                   p.name as pill_name, p.user_id
+            FROM pill_reminders pr
+            JOIN pills p ON p.id = pr.pill_id
+            """
+        )
+        return [dict(row) for row in cursor.fetchall()]

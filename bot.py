@@ -1,7 +1,7 @@
 import os
 import logging
 from dotenv import load_dotenv
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 
 import database as db
 from handlers import (
@@ -10,9 +10,10 @@ from handlers import (
     today_command,
     history_command,
     settings_command,
-    button_callback
+    button_callback,
+    text_message_handler
 )
-from scheduler import restore_all_reminders
+from scheduler import restore_all_reminders, restore_all_pill_reminders
 
 # Load environment variables
 load_dotenv()
@@ -29,6 +30,7 @@ async def post_init(application: Application) -> None:
     """Initialize database and restore reminders after bot starts."""
     db.init_db()
     await restore_all_reminders(application)
+    await restore_all_pill_reminders(application)
     logger.info("Bot initialized, reminders restored")
 
 
@@ -57,6 +59,9 @@ def main() -> None:
 
     # Register callback handler for inline buttons
     application.add_handler(CallbackQueryHandler(button_callback))
+
+    # Register text message handler (for pill name input)
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_message_handler))
 
     # Run the bot
     logger.info("Starting bot...")
