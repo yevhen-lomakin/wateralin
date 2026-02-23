@@ -344,6 +344,40 @@ def get_today_pill_logs(user_id: int) -> list[dict]:
         return [dict(row) for row in cursor.fetchall()]
 
 
+def get_pill_history(user_id: int, days: int = 7) -> list[dict]:
+    """Get pill take history for past N days. Returns list of {date, pills: [{name, taken}]}."""
+    pills = get_user_pills(user_id)
+    if not pills:
+        return []
+
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        result = []
+        for i in range(days):
+            d = date.today() - timedelta(days=i)
+            date_str = d.isoformat()
+
+            cursor.execute(
+                """
+                SELECT DISTINCT pill_id FROM pill_logs
+                WHERE user_id = ? AND DATE(taken_at) = ?
+                """,
+                (user_id, date_str)
+            )
+            taken_ids = {row["pill_id"] for row in cursor.fetchall()}
+
+            pill_statuses = []
+            for pill in pills:
+                pill_statuses.append({
+                    "name": pill["name"],
+                    "taken": pill["id"] in taken_ids
+                })
+
+            result.append({"date": d, "pills": pill_statuses})
+
+        return result
+
+
 def get_all_pill_reminders() -> list[dict]:
     """Get all pill reminders with user info for scheduler restoration."""
     with get_connection() as conn:

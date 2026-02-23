@@ -175,6 +175,7 @@ def get_pills_keyboard(user_id: int) -> InlineKeyboardMarkup:
         buttons.append([InlineKeyboardButton(label, callback_data=f"pill_view:{pill['id']}")])
 
     buttons.append([InlineKeyboardButton("Add pill", callback_data="pill_add")])
+    buttons.append([InlineKeyboardButton("History", callback_data="pills:history")])
     buttons.append([InlineKeyboardButton("Back", callback_data="menu:main")])
     return InlineKeyboardMarkup(buttons)
 
@@ -563,6 +564,26 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             "Your pills:",
             reply_markup=get_pills_keyboard(user_id)
         )
+
+    elif data == "pills:history":
+        history = db.get_pill_history(user_id, days=7)
+        if not history:
+            await query.edit_message_text(
+                "No pills added yet.",
+                reply_markup=get_pills_keyboard(user_id)
+            )
+            return
+
+        message = "Pills — Last 7 Days\n\n"
+        for entry in history:
+            day_name = entry["date"].strftime("%a")
+            statuses = " ".join(
+                f"[+]{p['name']}" if p["taken"] else f"[-]{p['name']}"
+                for p in entry["pills"]
+            )
+            message += f"{day_name}: {statuses}\n"
+
+        await query.edit_message_text(message, reply_markup=get_pills_keyboard(user_id))
 
     elif data == "pill_add":
         context.user_data["awaiting_pill_name"] = True
