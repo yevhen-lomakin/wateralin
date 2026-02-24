@@ -616,6 +616,10 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await query.edit_message_text("Pill not found.", reply_markup=get_pills_keyboard(user_id))
             return
         db.log_pill_taken(pill_id, user_id)
+
+        from scheduler import cancel_pill_followup
+        cancel_pill_followup(context, pill_id)
+
         await query.edit_message_text(
             f"Logged {pill['name']} as taken!",
             reply_markup=get_pills_keyboard(user_id)
