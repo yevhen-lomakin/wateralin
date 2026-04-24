@@ -257,3 +257,186 @@ async def restore_all_pill_reminders(context: ContextTypes.DEFAULT_TYPE) -> None
             r["user_id"], r["remind_at_hour"], r["remind_at_minute"],
             user.get("timezone", "UTC")
         )
+
+
+# --- Routine reminder functions ---
+
+
+def get_routine_job_name(routine_id: int) -> str:
+    """Get unique job name for a routine's daily reminder."""
+    return f"routine_{routine_id}"
+
+
+def get_routine_followup_job_name(routine_id: int) -> str:
+    """Get unique job name for a routine's follow-up reminder."""
+    return f"routine_followup_{routine_id}"
+
+
+def _user_tz(user: dict) -> ZoneInfo:
+    try:
+        return ZoneInfo(user.get("timezone", "UTC"))
+    except Exception:
+        return ZoneInfo("UTC")
+
+
+def _due_not_taken_items(routine_id: int, user_id: int, user_tz: ZoneInfo) -> list[dict]:
+    """Return routine items that are due today in user's tz AND not yet logged."""
+    today = datetime.now(user_tz).date()
+    routine = db.get_routine(routine_id, today=today)
+    if not routine:
+        return []
+    today_logs = db.get_today_routine_item_logs(user_id, today=today)
+    taken_ids = {log["routine_item_id"] for log in today_logs}
+    return [
+        item for item in routine["items"]
+        if item["due_today"] and item["id"] not in taken_ids
+    ]
+
+
+def _build_routine_reminder(routine_name: str, items: list[dict]) -> tuple[str, InlineKeyboardMarkup]:
+    """Build the reminder message text and button markup for a routine."""
+    has_cream = any(i["type"] == "cream" for i in items)
+    has_pill = any(i["type"] == "pill" for i in items)
+    emoji = ""
+    if has_cream:
+        emoji += "🧴"
+    if has_pill:
+        emoji += "💊"
+    if has_cream and not has_pill:
+        verb = "apply"
+    elif has_pill and not has_cream:
+        verb = "take"
+    else:
+        verb = "apply/take"
+    text = f"{emoji} {routine_name} — time to {verb}!"
+    buttons = [
+        [InlineKeyboardButton(
+            f"Taken: {item['name']}",
+            callback_data=f"routine_item_taken:{item['id']}"
+        )]
+        for item in items
+    ]
+    return text, InlineKeyboardMarkup(buttons)
+
+
+async def send_routine_reminder(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Send the daily routine reminder; schedule follow-up if items are due."""
+    data = context.job.data
+    routine_id = data["routine_id"]
+    user_id = data["user_id"]
+    user = db.get_or_create_user(user_id)
+    user_tz = _user_tz(user)
+
+    due = _due_not_taken_items(routine_id, user_id, user_tz)
+    if not due:
+        logger.info(f"Routine {routine_id}: nothing due/untaken, skipping")
+        return
+
+    routine = db.get_routine(routine_id)
+    if not routine:
+        return
+    text, markup = _build_routine_reminder(routine["name"], due)
+    try:
+        await context.bot.send_message(chat_id=user_id, text=text, reply_markup=markup)
+        logger.info(f"Sent routine reminder {routine_id} to {user_id}")
+    except Exception as e:
+        logger.error(f"Failed to send routine reminder {routine_id}: {e}")
+
+    schedule_routine_followup(context, routine_id, user_id)
+
+
+async def send_routine_followup(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Follow-up reminder every 30 min until all due items are marked taken."""
+    data = context.job.data
+    routine_id = data["routine_id"]
+    user_id = data["user_id"]
+    user = db.get_or_create_user(user_id)
+    user_tz = _user_tz(user)
+
+    due = _due_not_taken_items(routine_id, user_id, user_tz)
+    if not due:
+        logger.info(f"Routine {routine_id}: all taken, cancelling follow-up")
+        cancel_routine_followup(context, routine_id)
+        return
+
+    routine = db.get_routine(routine_id)
+    if not routine:
+        cancel_routine_followup(context, routine_id)
+        return
+    text, markup = _build_routine_reminder(routine["name"], due)
+    try:
+        await context.bot.send_message(
+            chat_id=user_id,
+            text=f"⏰ {text}",
+            reply_markup=markup,
+        )
+        logger.info(f"Sent routine follow-up {routine_id} to {user_id}")
+    except Exception as e:
+        logger.error(f"Failed to send routine follow-up {routine_id}: {e}")
+
+
+def schedule_routine_followup(context: ContextTypes.DEFAULT_TYPE,
+                              routine_id: int, user_id: int) -> None:
+    """Start repeating 30-min follow-up for a routine."""
+    job_name = get_routine_followup_job_name(routine_id)
+    for job in context.job_queue.get_jobs_by_name(job_name):
+        job.schedule_removal()
+    context.job_queue.run_repeating(
+        callback=send_routine_followup,
+        interval=timedelta(minutes=30),
+        first=timedelta(minutes=30),
+        name=job_name,
+        data={"routine_id": routine_id, "user_id": user_id},
+    )
+    logger.info(f"Scheduled routine follow-up every 30 min for routine {routine_id}")
+
+
+def cancel_routine_followup(context: ContextTypes.DEFAULT_TYPE, routine_id: int) -> None:
+    """Cancel any running follow-up for a routine."""
+    job_name = get_routine_followup_job_name(routine_id)
+    for job in context.job_queue.get_jobs_by_name(job_name):
+        job.schedule_removal()
+
+
+def setup_routine_reminder(context: ContextTypes.DEFAULT_TYPE, routine_id: int,
+                           user_id: int, hour: int, minute: int,
+                           user_timezone: str = "UTC") -> None:
+    """Create/replace the daily run_daily job for a routine."""
+    job_name = get_routine_job_name(routine_id)
+    for job in context.job_queue.get_jobs_by_name(job_name):
+        job.schedule_removal()
+    try:
+        tz = ZoneInfo(user_timezone)
+    except Exception:
+        tz = ZoneInfo("UTC")
+    target_time = dt_time(hour=hour, minute=minute, tzinfo=tz)
+    context.job_queue.run_daily(
+        callback=send_routine_reminder,
+        time=target_time,
+        name=job_name,
+        data={"routine_id": routine_id, "user_id": user_id},
+    )
+    logger.info(
+        f"Scheduled routine reminder {routine_id} at {hour:02d}:{minute:02d}"
+    )
+
+
+def remove_routine_reminder(context: ContextTypes.DEFAULT_TYPE, routine_id: int) -> None:
+    """Remove both daily and follow-up jobs for a routine."""
+    job_name = get_routine_job_name(routine_id)
+    for job in context.job_queue.get_jobs_by_name(job_name):
+        job.schedule_removal()
+    cancel_routine_followup(context, routine_id)
+
+
+async def restore_all_routine_reminders(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Restore all routine reminders on bot startup."""
+    routines = db.get_all_routines_for_scheduler()
+    logger.info(f"Restoring {len(routines)} routine reminders")
+    for r in routines:
+        user = db.get_or_create_user(r["user_id"])
+        setup_routine_reminder(
+            context, r["id"], r["user_id"],
+            r["remind_at_hour"], r["remind_at_minute"],
+            user.get("timezone", "UTC"),
+        )

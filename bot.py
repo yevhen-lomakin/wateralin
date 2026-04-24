@@ -13,7 +13,11 @@ from handlers import (
     button_callback,
     text_message_handler
 )
-from scheduler import restore_all_reminders, restore_all_pill_reminders
+from scheduler import (
+    restore_all_reminders,
+    restore_all_pill_reminders,
+    restore_all_routine_reminders,
+)
 
 # Load environment variables
 load_dotenv()
@@ -31,6 +35,7 @@ async def post_init(application: Application) -> None:
     db.init_db()
     await restore_all_reminders(application)
     await restore_all_pill_reminders(application)
+    await restore_all_routine_reminders(application)
     logger.info("Bot initialized, reminders restored")
 
 
