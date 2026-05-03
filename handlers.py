@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from datetime import date
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -284,6 +286,20 @@ def get_period_keyboard() -> InlineKeyboardMarkup:
         ],
         [InlineKeyboardButton("Cancel", callback_data="routines:menu")],
     ])
+
+
+def _render_routine_view_message(routine_id: int, user_id: int) -> tuple[str, InlineKeyboardMarkup] | None:
+    """Build (text, keyboard) for the routine view screen. Returns None if the routine is missing."""
+    routine = db.get_routine(routine_id)
+    if not routine:
+        return None
+    time_str = f"{routine['remind_at_hour']:02d}:{routine['remind_at_minute']:02d}"
+    if not routine["items"]:
+        body = "No items yet. Add creams or pills:"
+    else:
+        body = "[+] taken — tap to undo  [-] tap to take  [·] not due — tap to manage"
+    text = f"{routine['name']} — {time_str}\n\n{body}"
+    return text, get_routine_view_keyboard(routine_id, user_id)
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -829,23 +845,15 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     elif data.startswith("routine_view:"):
         routine_id = int(data.split(":")[1])
-        routine = db.get_routine(routine_id)
-        if not routine:
+        rendered = _render_routine_view_message(routine_id, user_id)
+        if rendered is None:
             await query.edit_message_text(
                 "Routine not found.",
                 reply_markup=get_routines_keyboard(user_id)
             )
             return
-        time_str = f"{routine['remind_at_hour']:02d}:{routine['remind_at_minute']:02d}"
-        if not routine["items"]:
-            body = "No items yet. Add creams or pills:"
-        else:
-            body = "[+] taken today  [-] due but not taken  [·] not due today"
-        msg = f"{routine['name']} — {time_str}\n\n{body}"
-        await query.edit_message_text(
-            msg,
-            reply_markup=get_routine_view_keyboard(routine_id, user_id)
-        )
+        text, markup = rendered
+        await query.edit_message_text(text, reply_markup=markup)
 
     elif data.startswith("routine_add_cream:"):
         routine_id = int(data.split(":")[1])
