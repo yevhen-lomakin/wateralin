@@ -661,3 +661,23 @@ def get_all_routines_for_scheduler() -> list[dict]:
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM routines")
         return [dict(row) for row in cursor.fetchall()]
+
+
+def delete_today_routine_item_log(item_id: int, user_id: int,
+                                  today: Optional[date] = None) -> int:
+    """Delete any routine_item_logs rows for this item+user dated today.
+
+    Returns the number of rows deleted. Idempotent: returns 0 if none exist.
+    """
+    if today is None:
+        today = date.today()
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            DELETE FROM routine_item_logs
+            WHERE routine_item_id = ? AND user_id = ? AND DATE(applied_at) = ?
+            """,
+            (item_id, user_id, today.isoformat())
+        )
+        return cursor.rowcount
