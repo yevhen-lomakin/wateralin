@@ -38,7 +38,6 @@ def get_quick_drink_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton("Settings", callback_data="settings:menu"),
         ],
         [
-            InlineKeyboardButton("Pills", callback_data="pills:menu"),
             InlineKeyboardButton("Routines", callback_data="routines:menu"),
         ]
     ])
@@ -164,45 +163,9 @@ def get_timezone_keyboard(page: int = 0) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(buttons)
 
 
-def get_pills_keyboard(user_id: int) -> InlineKeyboardMarkup:
-    """Get pills menu keyboard showing today's status."""
-    pills = db.get_user_pills(user_id)
-    today_logs = db.get_today_pill_logs(user_id)
-    taken_pill_ids = {log["pill_id"] for log in today_logs}
-
-    buttons = []
-    for pill in pills:
-        times = ", ".join(f"{r['remind_at_hour']:02d}:{r['remind_at_minute']:02d}" for r in pill["reminders"])
-        check = "+" if pill["id"] in taken_pill_ids else "-"
-        label = f"[{check}] {pill['name']}"
-        if times:
-            label += f" — {times}"
-        buttons.append([InlineKeyboardButton(label, callback_data=f"pill_view:{pill['id']}")])
-
-    buttons.append([InlineKeyboardButton("Add pill", callback_data="pill_add")])
-    buttons.append([InlineKeyboardButton("History", callback_data="pills:history")])
-    buttons.append([InlineKeyboardButton("Back", callback_data="menu:main")])
-    return InlineKeyboardMarkup(buttons)
-
-
-def get_pill_view_keyboard(pill_id: int, user_id: int) -> InlineKeyboardMarkup:
-    """Get keyboard for viewing/managing a single pill."""
-    pill = db.get_pill(pill_id)
-    today_logs = db.get_today_pill_logs(user_id)
-    taken = any(log["pill_id"] == pill_id for log in today_logs)
-
-    buttons = []
-    if not taken:
-        buttons.append([InlineKeyboardButton(f"Take {pill['name']}", callback_data=f"pill_taken:{pill_id}")])
-
-    buttons.append([InlineKeyboardButton("Add reminder time", callback_data=f"pill_add_time:{pill_id}")])
-    buttons.append([InlineKeyboardButton("Delete pill", callback_data=f"pill_delete_confirm:{pill_id}")])
-    buttons.append([InlineKeyboardButton("Back", callback_data="pills:menu")])
-    return InlineKeyboardMarkup(buttons)
-
-
-def get_hour_picker_keyboard(callback_prefix: str) -> InlineKeyboardMarkup:
-    """Get hour picker keyboard for pill reminders."""
+def get_hour_picker_keyboard(callback_prefix: str,
+                             cancel_callback: str = "routines:menu") -> InlineKeyboardMarkup:
+    """Hour picker keyboard. `cancel_callback` is where the Cancel button lands."""
     buttons = []
     for row_start in range(0, 24, 4):
         row = [
@@ -210,7 +173,7 @@ def get_hour_picker_keyboard(callback_prefix: str) -> InlineKeyboardMarkup:
             for h in range(row_start, min(row_start + 4, 24))
         ]
         buttons.append(row)
-    buttons.append([InlineKeyboardButton("Cancel", callback_data="pills:menu")])
+    buttons.append([InlineKeyboardButton("Cancel", callback_data=cancel_callback)])
     return InlineKeyboardMarkup(buttons)
 
 
@@ -250,16 +213,19 @@ def get_routine_view_keyboard(routine_id: int, user_id: int) -> InlineKeyboardMa
     for item in routine["items"]:
         if not item["due_today"]:
             status = "·"
+            callback = f"routine_item_view:{item['id']}"
         elif item["id"] in taken_ids:
             status = "+"
+            callback = f"routine_item_untake:{item['id']}"
         else:
             status = "-"
+            callback = f"routine_item_taken:{item['id']}"
         emoji = "🧴" if item["type"] == "cream" else "💊"
         period_label = {1: "daily", 2: "every 2 days", 3: "every 3 days", 7: "weekly"}.get(
             item["period_days"], f"every {item['period_days']} days"
         )
         label = f"[{status}] {emoji} {item['name']} — {period_label}"
-        buttons.append([InlineKeyboardButton(label, callback_data=f"routine_item_view:{item['id']}")])
+        buttons.append([InlineKeyboardButton(label, callback_data=callback)])
 
     buttons.append([
         InlineKeyboardButton("Add cream", callback_data=f"routine_add_cream:{routine_id}"),
@@ -295,11 +261,41 @@ def _render_routine_view_message(routine_id: int, user_id: int) -> tuple[str, In
         return None
     time_str = f"{routine['remind_at_hour']:02d}:{routine['remind_at_minute']:02d}"
     if not routine["items"]:
-        body = "No items yet. Add creams or pills:"
+        text = f"{routine['name']} — {time_str}\n\nNo items yet. Add creams or pills:"
     else:
-        body = "[+] taken — tap to undo  [-] tap to take  [·] not due — tap to manage"
-    text = f"{routine['name']} — {time_str}\n\n{body}"
+        text = f"{routine['name']} — {time_str}"
     return text, get_routine_view_keyboard(routine_id, user_id)
+
+
+def _render_routine_reminder_message(routine_id: int, user_id: int,
+                                     user: dict) -> tuple[str, InlineKeyboardMarkup] | None:
+    """Build (text, keyboard) for the daily-reminder message after a tap-to-toggle.
+
+    Returns None if the routine no longer exists.
+    """
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from scheduler import _build_routine_reminder
+    try:
+        user_tz = ZoneInfo(user.get("timezone", "UTC"))
+    except Exception:
+        user_tz = ZoneInfo("UTC")
+    today_local = datetime.now(user_tz).date()
+    routine = db.get_routine(routine_id, today=today_local)
+    if not routine:
+        return None
+    due_all = [i for i in routine["items"] if i["due_today"]]
+    today_logs = db.get_today_routine_item_logs(user_id, today=today_local)
+    taken_ids = {log["routine_item_id"] for log in today_logs}
+    return _build_routine_reminder(routine["name"], due_all, taken_ids)
+
+
+def _render_routine_after_op(ctx_kind: str, routine_id: int, user_id: int,
+                             user: dict) -> tuple[str, InlineKeyboardMarkup] | None:
+    """Pick the right renderer based on where the take/untake tap came from."""
+    if ctx_kind == "rem":
+        return _render_routine_reminder_message(routine_id, user_id, user)
+    return _render_routine_view_message(routine_id, user_id)
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -652,127 +648,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
         await query.edit_message_text(message, reply_markup=get_quick_drink_keyboard())
 
-    elif data == "pills:menu":
-        await query.edit_message_text(
-            "Your pills:",
-            reply_markup=get_pills_keyboard(user_id)
-        )
-
-    elif data == "pills:history":
-        history = db.get_pill_history(user_id, days=7)
-        if not history:
-            await query.edit_message_text(
-                "No pills added yet.",
-                reply_markup=get_pills_keyboard(user_id)
-            )
-            return
-
-        message = "Pills — Last 7 Days\n\n"
-        for entry in history:
-            day_name = entry["date"].strftime("%a")
-            statuses = " ".join(
-                f"[+]{p['name']}" if p["taken"] else f"[-]{p['name']}"
-                for p in entry["pills"]
-            )
-            message += f"{day_name}: {statuses}\n"
-
-        await query.edit_message_text(message, reply_markup=get_pills_keyboard(user_id))
-
-    elif data == "pill_add":
-        context.user_data["awaiting_pill_name"] = True
-        await query.edit_message_text(
-            "Enter the pill name:",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("Cancel", callback_data="pills:menu")]
-            ])
-        )
-
-    elif data.startswith("pill_view:"):
-        pill_id = int(data.split(":")[1])
-        pill = db.get_pill(pill_id)
-        if not pill:
-            await query.edit_message_text("Pill not found.", reply_markup=get_pills_keyboard(user_id))
-            return
-
-        times = ", ".join(f"{r['remind_at_hour']:02d}:{r['remind_at_minute']:02d}" for r in pill["reminders"])
-        today_logs = db.get_today_pill_logs(user_id)
-        taken = any(log["pill_id"] == pill_id for log in today_logs)
-        status = "Taken today" if taken else "Not taken yet"
-
-        msg = f"{pill['name']}\n\nReminders: {times or 'none'}\nStatus: {status}"
-        await query.edit_message_text(msg, reply_markup=get_pill_view_keyboard(pill_id, user_id))
-
-    elif data.startswith("pill_taken:"):
-        pill_id = int(data.split(":")[1])
-        pill = db.get_pill(pill_id)
-        if not pill:
-            await query.edit_message_text("Pill not found.", reply_markup=get_pills_keyboard(user_id))
-            return
-        db.log_pill_taken(pill_id, user_id)
-
-        from scheduler import cancel_pill_followup
-        cancel_pill_followup(context, pill_id)
-
-        await query.edit_message_text(
-            f"Logged {pill['name']} as taken!",
-            reply_markup=get_pills_keyboard(user_id)
-        )
-
-    elif data.startswith("pill_add_time:"):
-        pill_id = int(data.split(":")[1])
-        await query.edit_message_text(
-            "Select reminder hour:",
-            reply_markup=get_hour_picker_keyboard(f"pill_time:{pill_id}")
-        )
-
-    elif data.startswith("pill_time:"):
-        # Format: pill_time:<pill_id>:<hour>
-        parts = data.split(":")
-        pill_id = int(parts[1])
-        hour = int(parts[2])
-        pill = db.get_pill(pill_id)
-        if not pill:
-            await query.edit_message_text("Pill not found.", reply_markup=get_pills_keyboard(user_id))
-            return
-
-        db.add_pill_reminder(pill_id, hour, 0)
-
-        from scheduler import setup_pill_reminder
-        setup_pill_reminder(context, pill_id, pill["name"], user_id, hour, 0, user.get("timezone", "UTC"))
-
-        await query.edit_message_text(
-            f"Reminder added: {pill['name']} at {hour:02d}:00",
-            reply_markup=get_pill_view_keyboard(pill_id, user_id)
-        )
-
-    elif data.startswith("pill_delete_confirm:"):
-        pill_id = int(data.split(":")[1])
-        pill = db.get_pill(pill_id)
-        if not pill:
-            await query.edit_message_text("Pill not found.", reply_markup=get_pills_keyboard(user_id))
-            return
-        await query.edit_message_text(
-            f"Delete {pill['name']}?",
-            reply_markup=InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton("Yes, delete", callback_data=f"pill_delete:{pill_id}"),
-                    InlineKeyboardButton("Cancel", callback_data=f"pill_view:{pill_id}"),
-                ]
-            ])
-        )
-
-    elif data.startswith("pill_delete:"):
-        pill_id = int(data.split(":")[1])
-        pill = db.get_pill(pill_id)
-        if pill:
-            from scheduler import remove_pill_reminders
-            remove_pill_reminders(context, pill_id)
-            db.delete_pill(pill_id)
-        await query.edit_message_text(
-            "Pill deleted.",
-            reply_markup=get_pills_keyboard(user_id)
-        )
-
     elif data == "routines:menu":
         await query.edit_message_text(
             "Your routines:",
@@ -945,7 +820,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         )
 
     elif data.startswith("routine_item_taken:"):
-        item_id = int(data.split(":")[1])
+        parts = data.split(":")
+        item_id = int(parts[1])
+        ctx_kind = parts[2] if len(parts) > 2 else "view"
         item = db.get_routine_item(item_id)
         if not item:
             await query.edit_message_text(
@@ -970,10 +847,62 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         if not still_due:
             cancel_routine_followup(context, item["routine_id"])
 
-        await query.edit_message_text(
-            f"Logged {item['name']} as taken!",
-            reply_markup=get_routine_view_keyboard(item["routine_id"], user_id)
-        )
+        rendered = _render_routine_after_op(ctx_kind, item["routine_id"], user_id, user)
+        if rendered is None:
+            await query.edit_message_text(
+                "Routine not found.",
+                reply_markup=get_routines_keyboard(user_id)
+            )
+            return
+        text, markup = rendered
+        await query.edit_message_text(text, reply_markup=markup)
+
+    elif data.startswith("routine_item_untake:"):
+        from datetime import datetime, time as dt_time
+        from zoneinfo import ZoneInfo
+
+        parts = data.split(":")
+        item_id = int(parts[1])
+        ctx_kind = parts[2] if len(parts) > 2 else "view"
+        item = db.get_routine_item(item_id)
+        if not item:
+            await query.edit_message_text(
+                "Item not found.",
+                reply_markup=get_routines_keyboard(user_id)
+            )
+            return
+
+        try:
+            user_tz = ZoneInfo(user.get("timezone", "UTC"))
+        except Exception:
+            user_tz = ZoneInfo("UTC")
+        now_local = datetime.now(user_tz)
+        today_local = now_local.date()
+
+        db.delete_today_routine_item_log(item_id, user_id, today=today_local)
+
+        routine = db.get_routine(item["routine_id"], today=today_local)
+        if routine is not None:
+            today_logs_after = db.get_today_routine_item_logs(user_id, today=today_local)
+            taken_ids = {log["routine_item_id"] for log in today_logs_after}
+            still_due = [
+                i for i in routine["items"]
+                if i["due_today"] and i["id"] not in taken_ids
+            ]
+            fire_time = dt_time(routine["remind_at_hour"], routine["remind_at_minute"])
+            if still_due and now_local.time() >= fire_time:
+                from scheduler import schedule_routine_followup
+                schedule_routine_followup(context, item["routine_id"], user_id)
+
+        rendered = _render_routine_after_op(ctx_kind, item["routine_id"], user_id, user)
+        if rendered is None:
+            await query.edit_message_text(
+                "Routine not found.",
+                reply_markup=get_routines_keyboard(user_id)
+            )
+            return
+        text, markup = rendered
+        await query.edit_message_text(text, reply_markup=markup)
 
     elif data.startswith("routine_edit_time:"):
         routine_id = int(data.split(":")[1])
@@ -1043,21 +972,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle free text messages (used for pill/routine name input)."""
+    """Handle free text messages (used for routine name and item input)."""
     user_id = update.effective_user.id
-
-    if context.user_data.get("awaiting_pill_name"):
-        pill_name = update.message.text.strip()
-        if not pill_name or len(pill_name) > 50:
-            await update.message.reply_text("Please enter a valid pill name (1-50 characters).")
-            return
-        context.user_data["awaiting_pill_name"] = False
-        pill_id = db.add_pill(user_id, pill_name)
-        await update.message.reply_text(
-            f"Added {pill_name}! Now add a reminder time:",
-            reply_markup=get_hour_picker_keyboard(f"pill_time:{pill_id}")
-        )
-        return
 
     if context.user_data.get("awaiting_routine_name"):
         routine_name = update.message.text.strip()

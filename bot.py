@@ -15,7 +15,6 @@ from handlers import (
 )
 from scheduler import (
     restore_all_reminders,
-    restore_all_pill_reminders,
     restore_all_routine_reminders,
 )
 
@@ -34,7 +33,6 @@ async def post_init(application: Application) -> None:
     """Initialize database and restore reminders after bot starts."""
     db.init_db()
     await restore_all_reminders(application)
-    await restore_all_pill_reminders(application)
     await restore_all_routine_reminders(application)
     logger.info("Bot initialized, reminders restored")
 
@@ -65,7 +63,7 @@ def main() -> None:
     # Register callback handler for inline buttons
     application.add_handler(CallbackQueryHandler(button_callback))
 
-    # Register text message handler (for pill name input)
+    # Register text message handler (for routine name and item input)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_message_handler))
 
     # Run the bot
