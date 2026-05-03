@@ -531,6 +531,14 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         db.update_user_setting(user_id, "timezone", timezone)
         user = db.get_or_create_user(user_id)
 
+        from scheduler import setup_routine_reminder
+        for r in db.get_user_routines(user_id):
+            setup_routine_reminder(
+                context, r["id"], user_id,
+                r["remind_at_hour"], r["remind_at_minute"],
+                timezone,
+            )
+
         await query.edit_message_text(
             f"Timezone set to {timezone}!\n\nSettings",
             reply_markup=get_settings_keyboard(user)
